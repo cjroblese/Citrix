@@ -1,0 +1,12 @@
+set anio=%date:~10,4%
+set mes=%date:~4,2%
+set dia=%date:~7,2%
+set datecitrix=%anio%%mes%%dia%
+
+net use Z: /d /y
+net use z: \\192.168.2.220\d$\Websites\PlanDeAdministracion_Citrix
+cd C:\IBM\Check_Citrix
+rename Informe_Citrix_Teamfoods.htm Informe_Citrix_Teamfoods_%datecitrix%.htm
+xcopy C:\IBM\Check_Citrix\Informe_Citrix_Teamfoods_%datecitrix%.htm z:\ /y
+net use Z: /d /y
+pause
