@@ -1,0 +1,390 @@
+# Citrix
+Script para administracion citrix
+[cmdletbinding()]
+Param(
+[string]$Computername=$env:computername,
+[String]$SRVCatalog="SERCTXCOBO33",
+[string]$XenServerHost = "10.231.28.72",
+[string]$Username = "IBM\ibmwincre",
+[string]$Password = "/Atheros2015+",
+[string]$ReportTitle="Drive Utilization Report",
+[string]$Path="C:\IBM\Check_Citrix\Informe_Citrix_Teamfoods.htm"
+)
+
+#$ErrorActionPreference = "SilentlyContinue"
+
+$head = @'
+<h1>Informe de Servidores Citrix Teamfoods 2019</h1>
+<p>Version de Script 1.0 </p>
+<p>Elaborado por IBMCitrix</p>
+
+<style>
+
+body { background-color:#FFFFFF;
+       font-family:Calibri;
+       font-size:12pt;
+       margin-top:50px;
+       margin-left:30px;
+
+  }
+
+td, th { border:0px solid black; 
+         border-collapse:collapse; }
+th { color:white;
+     background-color:red; }
+th,td {
+  text-align: center;
+}
+table, tr, td, th { padding: 2px; margin: 0px }
+tr:nth-child(odd) {background-color: lightblue}
+table {
+width:90%;
+margin-left:10px; 
+margin-bottom:10px;
+}
+caption
+ 
+{
+background-color:#FFFF66;
+text-align:left;
+font-weight:bold;
+font-size:14pt;
+}
+h1,p
+{
+text-align:center;
+margin-top:1px;
+line-height: 0.2;
+}
+</style>
+
+'@
+
+
+$fragments=@()
+ 
+
+Import-Module XenServerPSSnapIn
+
+$MyCredential=New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $Username, ($Password | ConvertTo-SecureString -AsPlainText -Force)
+$ConnectSession = Connect-XenServer -Url https://$XenServerHost -Creds $MyCredential -NoWarnCertificates -SetDefaultSession 
+
+#################################################################################################################
+############################################## VALIDACION HOSTS #################################################
+#################################################################################################################
+
+$XH = (Get-XenHost).name_label | Sort-Object | Out-File C:\IBM\Check_Citrix\host.txt
+$XServer = Get-Content C:\IBM\Check_Citrix\host.txt
+$fragments+="<h3>Validate Host</h3>"
+Write-Host ''
+Write-Host '******** VERIFICANDO ESTADO DE XENSERVER *************' -ForegroundColor Green
+Write-Host ''
+
+$ValidateH=foreach ($Xhost in $XServer){
+$VXH = Get-XenHost -name $Xhost
+
+$NameH = $VXH.name_label
+$IPH = $VXH.address
+$StateH = $VXH.enabled
+
+if($StateH -eq "True"){
+
+$StateH = "Enable"
+
+}else{
+
+$StateH ="Disable"
+
+}
+
+$Test = Test-Connection $IPH
+if($Test -ne $null){
+
+$TF = "OK"
+
+} else{
+
+$TF = "False"
+} 
+
+
+$proph = [ordered]@{
+
+Name = $NameH
+IP = $IPH
+State = $StateH
+Test_Connection = $TF
+
+}
+
+New-Object PSObject -Property $proph
+
+
+   
+}
+
+[xml]$htmlh = $ValidateH | ConvertTo-Html -Fragment
+$fragments+= $htmlh.InnerXml
+
+#################################################################################################################
+############################################### VALIDACION vMS ##################################################
+#################################################################################################################
+
+$fragments+="<h3>State Virtual Machines</h3>"
+
+foreach ($xserv in $XServer){
+
+
+$VM=Get-XenVm | where {$_.resident_on -eq (Get-XenHost -name $xserv) -and $_.power_state -like "*" -and $_.name_label -inotlike "Control*" -and $_.name_label -like "SERCTXCOBO0*"  } 
+$Name = $VM.name_label
+
+Write-Host '******** VERIFICANDO ESTADO DE LAS MAQUiNAS EN ' $xserv '*************' -ForegroundColor Green
+
+$Validate = foreach ($nomb in $Name){
+
+$command = Get-XenVm $nomb
+$state = $command.power_state
+$nomb = $nomb.Split(" ")[0]
+$count =$state.Count
+
+if ($count -eq "2"){
+
+$state = $command | where {$_.power_state -like "Running"}
+$state = $state.power_state
+
+}else {
+
+$state=$state[0]
+
+}
+
+#################################################################################################################
+############################################## VALIDACIÓN UPTIME ################################################
+#################################################################################################################
+
+    $Upt = [string]( Get-WmiObject Win32_OperatingSystem -ComputerName $nomb -ErrorAction SilentlyContinue).lastbootuptime
+    $Y = $Upt.Substring(0,4) 
+    $M = $Upt.Substring(4,2)
+    $D = $Upt.Substring(6,2)
+    $H = $Upt.Substring(8,2)
+    $Mi = $Upt.Substring(10,2)
+    $SrvUpt = [String](Write $D'/'$M'/'$Y' '$H':'$Mi)
+
+$prop = [ordered]@{
+
+Name = $Nomb
+State = $State
+Uptime = $SrvUpt
+
+}
+
+New-Object PSObject -Property $prop
+
+
+}
+
+
+[xml]$html = $Validate | ConvertTo-Html -Fragment
+$caption= $html.CreateElement("caption")                                                                     
+$html.table.AppendChild($caption) | Out-Null                                                                            
+$html.table.caption= [String]$xserv
+$fragments+= $html.InnerXml
+
+
+}
+
+Write-Host '******** VERIFICANDO ESTADO DE CATALOGOS *************' -ForegroundColor GreeN
+
+#################################################################################################################
+############################################ CATALOGO DE MAQUINAS ###############################################
+#################################################################################################################
+
+$Catalog = Invoke-Command -ComputerName $SRVCatalog -ScriptBlock {(asnp Citrix*),(Get-BrokerCatalog -Name "Worker Win2012")}
+$Config = $Catalog.UnassignedCount
+$NameC = $Catalog.Name
+$Count = Invoke-Command -ComputerName $SRVCatalog -ScriptBlock {(asnp Citrix*),(Get-BrokerDesktop -RegistrationState Registered -CatalogName "Worker Win2012")}
+$Register = $Count.count
+
+$prct =[ordered]@{
+
+Name = $NameC
+Config_Machines = $Config
+Register_Machines = $Register
+
+
+}
+
+$Cat=New-Object PSObject -Property $prct
+[xml]$htmlc = $Cat | ConvertTo-Html -Fragment
+$fragments+="<h3>Machine Catalogs</h3>"
+$fragments+= $htmlc.InnerXml
+
+Write-Host '******** VERIFICANDO CONEXION A URL VDI *************' -ForegroundColor Green
+
+#################################################################################################################
+############################################## VALIDACION URL ###################################################
+#################################################################################################################
+
+$URL ="https://vdi.team.co/vpn/index.html","http://storefront.teamfoods.local/Citrix/storeWeb/"
+$FURL=foreach($tu in $URL){
+$TestU = Invoke-webrequest $tu
+if($TestU.StatusCode -ne $null){
+$TV = "OK"
+} else{
+$TV = "False"
+} 
+
+
+
+$propu = [ordered]@{
+
+URL = $tu
+Test_Connection = $TV
+
+}
+
+New-Object PSObject -Property $propu
+
+}
+
+
+[xml]$htmlu = $FURL | ConvertTo-Html -Fragment
+$fragments+="<h3>Test URL VDI</h3>"
+$fragments+= $htmlu.InnerXml
+
+Write-Host '******** VERIFICANDO ESPACIOS *************' -ForegroundColor Green
+
+#################################################################################################################
+############################################# VALIDACION ESPACIO ################################################
+#################################################################################################################
+
+<#$VSpace= foreach($servername in $XServer){
+
+#VARIABLES
+
+$command = 'df -h /dev/sda1'
+$servername = $servername
+$plinkpath = 'C:\IBM\Check_Citrix\plink.exe'
+$nopromt = '-no-antispoof'
+$commsp = "$plinkpath  $nopromt -pw $password $username@$servername $command"
+$commfinal = C:\Windows\system32\cmd.exe /c $commsp
+$commfinal | Out-File C:\IBM\Check_Citrix\validacion.txt
+$b = Get-Content -Path C:\IBM\Check_Citrix\validacion.txt
+
+@(ForEach ($a in $b) {$a.Replace(' ',';')}) > C:\IBM\Check_Citrix\validacion1.txt
+$c = Get-Content -Path C:\IBM\Check_Citrix\validacion1.txt
+@(ForEach ($d in $c) {$d.Replace(';;;;;;;;;;;','')}) > C:\IBM\Check_Citrix\validacion.txt
+$e = Get-Content -Path C:\IBM\Check_Citrix\validacion.txt
+@(ForEach ($f in $e) {$f.Replace(';;',';')}) > C:\IBM\Check_Citrix\validacion1.txt
+$import = Import-Csv -Delimiter  ";" -Path C:\IBM\Check_Citrix\validacion1.txt
+
+
+$space = [ordered]@{
+
+Server = $servername
+Fylesystem = $import.Filesystem
+Size = $import.Size
+Used = $import.Used
+Porcent = $import."Use%"
+
+}
+
+New-Object PSObject -Property $space
+
+
+
+}
+
+[xml]$htmlsp = $VSpace | ConvertTo-Html -Fragment
+$fragments+="<h3>Space Filesystem XenServer</h3>"
+$fragments+= $htmlsp.InnerXml
+
+Write-Host '******** VERIFICANDO ESTADO DE SERVIDORES PROVISIONING *************' -ForegroundColor Green#>
+
+#######################################################################################
+############################## PROVISIONING ###########################################
+#######################################################################################
+
+$CommandProv={
+Add-PSSnapin -Name mcliPSSnapin
+$Servers = Mcli-Get Server | findstr "serverName"
+$Servers = $Servers.Replace("serverName: ","")
+
+$ConProv=foreach($PServ in $Servers){
+
+$Connections=Mcli-Get ServerStatus -p servername=$PServ | findstr "deviceCount"
+$Connections=$Connections.Replace("deviceCount: ","")
+
+
+$Provisioning = @{
+
+Server = $PServ
+Connections = $Connections
+}
+
+New-Object PSObject -Property $Provisioning
+}
+
+}
+
+ $Servers = Invoke-Command -ComputerName SERCTXCOBO27 -ScriptBlock {(Add-PSSnapin -Name mcliPSSnapin),(Mcli-Get Server | findstr "serverName")}
+ $Servers = $Servers.Replace("serverName: ","")
+
+$ConProv=foreach($PServ in $Servers){
+
+$ScrBlock = 
+@"
+Add-PSSnapin -Name mcliPSSnapin
+Mcli-Get ServerStatus -p servername=$PServ | findstr "deviceCount"
+"@
+
+
+$FinalBlock = [Scriptblock]::Create($ScrBlock)
+$Connections=Invoke-Command -ComputerName SERCTXCOBO27 -ScriptBlock $FinalBlock
+$Connections=$Connections.Replace("deviceCount: ","")
+
+$Provisioning = @{
+
+Server = $PServ
+Connections = $Connections
+}
+
+New-Object PSObject -Property $Provisioning
+}
+
+
+[xml]$htmlprov = $ConProv | ConvertTo-Html -Fragment
+$fragments+="<h3>Validation Provisioning </h3>"
+$fragments+= $htmlprov.InnerXml
+$fragments+="<I>Executed Report:   $(Get-Date)</I>"
+
+
+
+#### Crear HTM ####
+ConvertTo-Html -Head $head -Title $ReportTitle -PostContent $fragments | Out-File -FilePath $path -Encoding ascii
+
+
+#Remover archivo Host
+
+Remove-Item C:\IBM\Check_Citrix\host.txt
+Remove-Item C:\IBM\Check_Citrix\validacion.txt
+Remove-Item C:\IBM\Check_Citrix\validacion1.txt
+
+##########################################################################
+############################### COPY FILE ################################
+##########################################################################
+
+
+$userPassword = ConvertTo-SecureString -String $Password -AsPlainText -Force
+$Cred= New-Object System.Management.Automation.PSCredential $Username,$userPassword
+$New=New-PSDrive -Name Z -PSProvider filesystem -Root \\10.231.27.110\c$\IBM\Reporte_Citrix -Credential $cred
+$Copy=Copy-Item -Path $Path -Destination z:\ -Recurse
+$R=Remove-PSDrive Z
+
+$SBlk = 
+@"
+Send-mailmessage -from "Health Check Citrix Teamfoods <citrix@teamfoods.com.co>" -to "cjrobles@co.ibm.com","jperezba@co.ibm.com","winaler1@co.ibm.com","lumbaque@co.ibm.com" -subject "Informe Citrix Teamfoods 2019" -body "Cordial Saludo, se envia informe de Healt Check de la plataforma de virtualización, es necesario validar si existe anomalía por favor informar al StanBy de Citrix" -Attachments C:\IBM\Reporte_Citrix\Informe_Citrix_Teamfoods.htm -priority High -smtpServer 129.39.183.148
+"@
+$FSblk = [Scriptblock]::Create($SBlk)
+
+Invoke-Command -ComputerName 10.231.27.110 -Credential $cred -ScriptBlock $FSblk
